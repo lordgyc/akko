@@ -26,6 +26,7 @@ export default function ImportScreen() {
   const [selectedItem, setSelectedItem] = useState<BeerItem | null>(null);
   const [quantity, setQuantity] = useState('');
   const [cost, setCost] = useState('');
+  const [remark, setRemark] = useState(''); // New state for the optional remark
   const [loading, setLoading] = useState(true);
   const [importing, setImporting] = useState(false);
   const router = useRouter();
@@ -95,11 +96,12 @@ export default function ImportScreen() {
 
       if (updateError) throw updateError;
 
-      // Log to imports table
+      // Log to imports table (including the optional remark)
       const { error: logError } = await supabase.from('import').insert({
         item: selectedItemId,
         quantity: qty,
         cost: newCost,
+        remark: remark.trim() || null, // Submits null if the user leaves it blank
       });
 
       if (logError) throw logError;
@@ -109,6 +111,7 @@ export default function ImportScreen() {
       setSelectedItemId(null);
       setQuantity('');
       setCost('');
+      setRemark(''); // Clear the remark state on success
       fetchItems();
       router.back();
     } catch (error) {
@@ -218,6 +221,13 @@ export default function ImportScreen() {
                 value={cost}
                 onChangeText={setCost}
                 keyboardType="decimal-pad"
+              />
+
+              <InputField
+                label="Remarks (Optional)"
+                placeholder="Supplier info, batch code, or additional details"
+                value={remark}
+                onChangeText={setRemark}
               />
 
               <PrimaryButton

@@ -22,6 +22,7 @@ interface ImportWithItem extends ImportRecord {
   itemUnit?: string;
   itemCategoryName?: string;
   itemCatId?: number | null;
+  remark?: string | null; // Included explicitly for type safety
 }
 
 interface SaleWithItem extends DeductRecord {
@@ -428,6 +429,11 @@ function WeeklyReportScreen() {
                               <Text style={[styles.rowMeta, { color: colors.textSecondary }]}>
                                 {new Date(imp.created_at).toLocaleDateString()} · Qty: {imp.quantity} {imp.itemUnit}
                               </Text>
+                              {imp.remark ? (
+                                <Text style={[styles.rowRemark, { color: colors.textSecondary }]}>
+                                  📝 {imp.remark}
+                                </Text>
+                              ) : null}
                             </View>
                             <View style={styles.rowRight}>
                               <Text style={[styles.rowValue, { color: colors.success }]}>
@@ -497,6 +503,11 @@ function WeeklyReportScreen() {
                               <Text style={[styles.rowMeta, { color: colors.textSecondary }]}>
                                 {new Date(imp.created_at).toLocaleDateString()} · Qty: {imp.quantity} {imp.itemUnit}
                               </Text>
+                              {imp.remark ? (
+                                <Text style={[styles.rowRemark, { color: colors.textSecondary }]}>
+                                  📝 {imp.remark}
+                                </Text>
+                              ) : null}
                             </View>
                             <View style={styles.rowRight}>
                               <Text style={[styles.rowValue, { color: colors.success }]}>
@@ -1005,6 +1016,11 @@ const styles = StyleSheet.create({
   },
   rowMeta: {
     fontSize: 12,
+  },
+  rowRemark: {
+    fontSize: 12,
+    marginTop: 4,
+    fontStyle: 'italic',
   },
   rowRight: {
     alignItems: 'flex-end',
