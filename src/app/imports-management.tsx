@@ -2,6 +2,7 @@ import { InputField } from '@/components/ui/input-field';
 import { BeerItem, ImportRecord, supabase } from '@/config/supabase';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { formatETB } from '@/utils/currency';
 import { useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import {
@@ -97,7 +98,7 @@ export default function ImportsManagementScreen() {
             Quantity Added: {item.quantity}
           </Text>
           <Text style={[styles.cost, { color: colors.textSecondary }]}>
-            Cost per Unit: ${parseFloat(item.cost.toString()).toFixed(2)}
+            Cost per Unit: {formatETB(parseFloat(item.cost.toString()))}
           </Text>
           <Text style={[styles.createdAt, { color: colors.textSecondary }]}>
             {new Date(item.created_at).toLocaleDateString()} {new Date(item.created_at).toLocaleTimeString()}

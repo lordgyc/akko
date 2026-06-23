@@ -4,6 +4,7 @@ import { BeerItem, supabase } from '@/config/supabase';
 import { Colors } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { formatETB } from '@/utils/currency';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View, KeyboardAvoidingView, Platform } from 'react-native';
@@ -140,7 +141,7 @@ export default function DeductScreen() {
               Current Stock: {item.quantity}
             </Text>
             <Text style={[styles.itemDetail, { color: colors.textSecondary }]}>
-              Cost: ${item.cost.toFixed(2)}
+              Cost: {formatETB(item.cost)}
             </Text>
           </View>
 

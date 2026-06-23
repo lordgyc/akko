@@ -83,6 +83,7 @@ function RootLayoutNav() {
       />
       <Stack.Screen name="update-stock" />
       <Stack.Screen name="explore" />
+      <Stack.Screen name="weekly-report" />
     </Stack>
   );
 }

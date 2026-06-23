@@ -3,24 +3,26 @@ import { InputField } from '@/components/ui/input-field';
 import { BeerItem, supabase } from '@/config/supabase';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import {
-    Alert,
-    FlatList,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
-    KeyboardAvoidingView,
-    Platform
+  Alert,
+  FlatList,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 export default function ImportScreen() {
+  const { itemId } = useLocalSearchParams<{ itemId?: string }>();
+  
   const [items, setItems] = useState<BeerItem[]>([]);
-  const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
+  const [selectedItemId, setSelectedItemId] = useState<any | null>(null);
   const [selectedItem, setSelectedItem] = useState<BeerItem | null>(null);
   const [quantity, setQuantity] = useState('');
   const [cost, setCost] = useState('');
@@ -33,6 +35,18 @@ export default function ImportScreen() {
   useEffect(() => {
     fetchItems();
   }, []);
+
+  // Safe string-based comparison to prevent type mismatch bugs (e.g. 12 vs "12")
+  useEffect(() => {
+    if (items.length > 0 && itemId) {
+      const foundItem = items.find((i) => String(i.id) === String(itemId));
+      if (foundItem) {
+        setSelectedItem(foundItem);
+        setSelectedItemId(foundItem.id); // Retains its original type (number or string) for database updates
+        setCost(foundItem.cost.toString());
+      }
+    }
+  }, [items, itemId]);
 
   const fetchItems = async () => {
     try {
@@ -55,7 +69,7 @@ export default function ImportScreen() {
 
   const handleImport = async () => {
     if (!selectedItem || !quantity || !cost) {
-      Alert.alert('Error', 'Please select an item and fill in all fields');
+      Alert.alert('Error', 'Please fill in all fields');
       return;
     }
 
@@ -63,6 +77,12 @@ export default function ImportScreen() {
     try {
       const qty = parseInt(quantity, 10);
       const newCost = parseFloat(cost);
+
+      if (isNaN(qty) || qty <= 0) {
+        Alert.alert('Error', 'Please enter a valid quantity');
+        setImporting(false);
+        return;
+      }
 
       // Update the items table
       const { error: updateError } = await supabase
@@ -109,6 +129,10 @@ export default function ImportScreen() {
     );
   }
 
+  // Fallback check: only show the selection list if there is no route parameter
+  // OR if we failed to match the passed ID to any item in our database.
+  const showSelectionList = !itemId || !selectedItem;
+
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
       <View style={[styles.header, { borderBottomColor: colors.border }]}>
@@ -125,79 +149,85 @@ export default function ImportScreen() {
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={{ flex: 1 }}
       >
-        <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-          <Text style={[styles.sectionTitle, { color: colors.text }]}>Select Item</Text>
+        <ScrollView
+          contentContainerStyle={styles.content}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+        >
+          {showSelectionList && (
+            <>
+              <Text style={[styles.sectionTitle, { color: colors.text }]}>Select Item</Text>
+              <FlatList
+                data={items}
+                keyExtractor={(item) => String(item.id)}
+                scrollEnabled={false}
+                renderItem={({ item }) => (
+                  <TouchableOpacity
+                    onPress={() => handleSelectItem(item)}
+                    style={[
+                      styles.itemButton,
+                      {
+                        backgroundColor: colors.backgroundElement,
+                        borderColor: selectedItemId === item.id ? colors.tint : colors.backgroundElement,
+                        borderWidth: selectedItemId === item.id ? 2 : 1,
+                      },
+                    ]}
+                  >
+                    <View style={styles.itemButtonContent}>
+                      <Text style={[styles.itemName, { color: colors.text }]}>{item.name}</Text>
+                      <Text style={[styles.itemDetails, { color: colors.textSecondary }]}>
+                        Current: {item.quantity} {item.unit}
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+                )}
+              />
+            </>
+          )}
 
-          <FlatList
-            data={items}
-            keyExtractor={(item) => item.id}
-            scrollEnabled={false}
-            renderItem={({ item }) => (
-              <TouchableOpacity
-                onPress={() => handleSelectItem(item)}
-                style={[
-                  styles.itemButton,
-                  {
-                    backgroundColor: colors.backgroundElement,
-                    borderColor: selectedItemId === item.id ? colors.tint : colors.backgroundElement,
-                    borderWidth: selectedItemId === item.id ? 2 : 1,
-                  },
-                ]}
-              >
-                <View style={styles.itemButtonContent}>
-                  <Text style={[styles.itemName, { color: colors.text }]}>{item.name}</Text>
-                  <Text style={[styles.itemDetails, { color: colors.textSecondary }]}>
-                    Current: {item.quantity} {item.unit}
-                  </Text>
-                </View>
-              </TouchableOpacity>
-            )}
-          />
+          {selectedItem && (
+            <>
+              {/* Only show a separator line if the selection list is actually visible */}
+              {showSelectionList && <View style={styles.divider} />}
 
-        {selectedItem && (
-          <>
-            <View style={styles.divider} />
+              <Text style={[styles.sectionTitle, { color: colors.text }]}>Import Details</Text>
 
-            <Text style={[styles.sectionTitle, { color: colors.text }]}>Import Details</Text>
+              <View style={[styles.selectedItemCard, { backgroundColor: colors.backgroundElement }]}>
+                <Text style={[styles.selectedItemName, { color: colors.tint }]}>
+                  {selectedItem.name}
+                </Text>
+                <Text style={[styles.selectedItemDetails, { color: colors.textSecondary }]}>
+                  Unit: {selectedItem.unit}
+                </Text>
+                <Text style={[styles.selectedItemDetails, { color: colors.textSecondary }]}>
+                  Current Qty: {selectedItem.quantity}
+                </Text>
+              </View>
 
-            <View
-              style={[styles.selectedItemCard, { backgroundColor: colors.backgroundElement }]}
-            >
-              <Text style={[styles.selectedItemName, { color: colors.tint }]}>
-                {selectedItem.name}
-              </Text>
-              <Text style={[styles.selectedItemDetails, { color: colors.textSecondary }]}>
-                Unit: {selectedItem.unit}
-              </Text>
-              <Text style={[styles.selectedItemDetails, { color: colors.textSecondary }]}>
-                Current Qty: {selectedItem.quantity}
-              </Text>
-            </View>
+              <InputField
+                label="Quantity to Import"
+                placeholder="Number of units"
+                value={quantity}
+                onChangeText={setQuantity}
+                keyboardType="numeric"
+              />
 
-            <InputField
-              label="Quantity to Import"
-              placeholder="Number of units"
-              value={quantity}
-              onChangeText={setQuantity}
-              keyboardType="numeric"
-            />
+              <InputField
+                label="Cost per Unit (ETB)"
+                placeholder="New cost"
+                value={cost}
+                onChangeText={setCost}
+                keyboardType="decimal-pad"
+              />
 
-            <InputField
-              label="Cost per Unit"
-              placeholder="New cost"
-              value={cost}
-              onChangeText={setCost}
-              keyboardType="decimal-pad"
-            />
-
-            <PrimaryButton
-              title={importing ? 'Importing...' : 'Confirm Import'}
-              onPress={handleImport}
-              disabled={importing}
-              style={styles.button}
-            />
-          </>
-        )}
+              <PrimaryButton
+                title={importing ? 'Importing...' : 'Confirm Import'}
+                onPress={handleImport}
+                disabled={importing}
+                style={styles.button}
+              />
+            </>
+          )}
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -234,7 +264,7 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     paddingHorizontal: 20,
     paddingVertical: 24,
-    paddingBottom: 120, // Bottom padding to prevent keyboard blocking
+    paddingBottom: 120,
   },
   sectionTitle: {
     fontSize: 16,

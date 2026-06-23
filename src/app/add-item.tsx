@@ -49,15 +49,62 @@ const BackgroundDecorations = () => (
   </View>
 );
 
+import { useEffect } from 'react';
+import { Category } from '@/config/supabase';
+
 export default function AddItemScreen() {
   const [name, setName] = useState('');
   const [unit, setUnit] = useState('');
   const [quantity, setQuantity] = useState('');
   const [cost, setCost] = useState('');
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [selectedCategory, setSelectedCategory] = useState<number | null>(null);
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [showAddCategoryInput, setShowAddCategoryInput] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [isCreatingCategory, setIsCreatingCategory] = useState(false);
   const router = useRouter();
   const colorScheme = useColorScheme();
   const colors = Colors[colorScheme === 'dark' ? 'dark' : 'light'];
+
+  useEffect(() => {
+    fetchCategories();
+  }, []);
+
+  const fetchCategories = async () => {
+    try {
+      const { data, error } = await supabase.from('category').select('*').order('name');
+      if (error) throw error;
+      setCategories(data || []);
+    } catch (err) {
+      console.error('Error fetching categories:', err);
+    }
+  };
+
+  const handleAddCategory = async () => {
+    if (!newCategoryName.trim()) return;
+    setIsCreatingCategory(true);
+    try {
+      const { data, error } = await supabase
+        .from('category')
+        .insert({ name: newCategoryName.trim() })
+        .select()
+        .single();
+      if (error) throw error;
+
+      const newCat = data as Category;
+      setCategories((prev) => [...prev, newCat].sort((a, b) => a.name.localeCompare(b.name)));
+      setSelectedCategory(newCat.id);
+      setNewCategoryName('');
+      setShowAddCategoryInput(false);
+      Alert.alert('Success', 'Category added!');
+    } catch (err) {
+      console.error('Error adding category:', err);
+      Alert.alert('Error', 'Failed to add category');
+    } finally {
+      setIsCreatingCategory(false);
+    }
+  };
 
   const handleAdd = async () => {
     if (!name.trim() || !unit.trim() || !quantity.trim() || !cost.trim()) {
@@ -72,6 +119,7 @@ export default function AddItemScreen() {
         unit: unit.trim(),
         quantity: parseInt(quantity, 10),
         cost: parseFloat(cost),
+        cat: selectedCategory,
       });
 
       if (error) throw error;
@@ -80,6 +128,7 @@ export default function AddItemScreen() {
       setUnit('');
       setQuantity('');
       setCost('');
+      setSelectedCategory(null);
       router.back();
     } catch (error) {
       console.error('Error adding item:', error);
@@ -117,6 +166,76 @@ export default function AddItemScreen() {
             value={name}
             onChangeText={setName}
           />
+
+          {/* Category Selection */}
+          <View style={styles.categoryLabelRow}>
+            <Text style={[styles.categoryLabel, { color: colors.text }]}>Category (Optional)</Text>
+            <TouchableOpacity onPress={() => setShowAddCategoryInput(!showAddCategoryInput)}>
+              <Text style={[styles.addCategoryLink, { color: colors.purple }]}>
+                {showAddCategoryInput ? 'Cancel' : '+ New Category'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {showAddCategoryInput && (
+            <View style={[styles.inlineCategoryForm, { borderColor: colors.border, backgroundColor: colors.card }]}>
+              <InputField
+                label="New Category Name"
+                placeholder="e.g., Beverages"
+                value={newCategoryName}
+                onChangeText={setNewCategoryName}
+              />
+              <View style={styles.inlineCategoryButtons}>
+                <TouchableOpacity
+                  onPress={handleAddCategory}
+                  disabled={isCreatingCategory}
+                  style={[styles.inlineCatBtn, { backgroundColor: colors.purple }]}
+                >
+                  <Text style={{ color: '#fff', fontWeight: '600' }}>
+                    {isCreatingCategory ? 'Saving...' : 'Save'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
+
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.categoryList}
+          >
+            {categories.map((cat) => {
+              const isSelected = selectedCategory === cat.id;
+              return (
+                <TouchableOpacity
+                  key={cat.id}
+                  onPress={() => setSelectedCategory(isSelected ? null : cat.id)}
+                  style={[
+                    styles.categoryPill,
+                    {
+                      backgroundColor: isSelected ? colors.purple : colors.backgroundElement,
+                      borderColor: isSelected ? colors.purple : colors.border,
+                    },
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.categoryPillText,
+                      { color: isSelected ? '#fff' : colors.text },
+                    ]}
+                  >
+                    {cat.name}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+            {categories.length === 0 && (
+              <Text style={{ color: colors.textSecondary, fontSize: 13, fontStyle: 'italic' }}>
+                No categories added yet
+              </Text>
+            )}
+          </ScrollView>
+
           <InputField
             label="Unit"
             placeholder="e.g., Box, Bottle, Case"
@@ -186,5 +305,51 @@ const styles = StyleSheet.create({
     marginTop: 40,
     marginBottom: 16,
   },
+  categoryLabelRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 16,
+    marginBottom: 8,
+  },
+  categoryLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  addCategoryLink: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  categoryList: {
+    flexDirection: 'row',
+    marginBottom: 16,
+    gap: 8,
+    paddingVertical: 4,
+  },
+  categoryPill: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+    borderWidth: 1,
+  },
+  categoryPillText: {
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  inlineCategoryForm: {
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    marginBottom: 16,
+  },
+  inlineCategoryButtons: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    marginTop: 8,
+  },
+  inlineCatBtn: {
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+  },
 });
-
