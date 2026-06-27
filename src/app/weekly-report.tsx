@@ -14,6 +14,7 @@ import {
   TouchableOpacity,
   View,
   ActivityIndicator,
+  Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -22,7 +23,7 @@ interface ImportWithItem extends ImportRecord {
   itemUnit?: string;
   itemCategoryName?: string;
   itemCatId?: number | null;
-  remark?: string | null; // Included explicitly for type safety
+  remark?: string | null;
 }
 
 interface SaleWithItem extends DeductRecord {
@@ -32,7 +33,22 @@ interface SaleWithItem extends DeductRecord {
   itemCatId?: number | null;
 }
 
-type TabType = 'overview' | 'imports' | 'sales' | 'stock';
+interface StockCountRecord {
+  id: number;
+  created_at: string;
+  item: number;
+  system_quantity: number;
+  physical_quantity: number;
+  note?: string | null;
+}
+
+interface StockCountWithItem extends StockCountRecord {
+  itemName?: string;
+  itemUnit?: string;
+  itemCatId?: number | null;
+}
+
+type TabType = 'overview' | 'imports' | 'sales' | 'stock' | 'counts';
 
 // Timezone-safe local date formatter
 const formatDateToYYYYMMDD = (date: Date) => {
@@ -62,6 +78,7 @@ function WeeklyReportScreen() {
   const [items, setItems] = useState<BeerItem[]>([]);
   const [weeklyImports, setWeeklyImports] = useState<ImportWithItem[]>([]);
   const [weeklySales, setWeeklySales] = useState<SaleWithItem[]>([]);
+  const [weeklyCounts, setWeeklyCounts] = useState<StockCountWithItem[]>([]);
   
   // Date states
   const [weekOffset, setWeekOffset] = useState(0);
@@ -82,6 +99,29 @@ function WeeklyReportScreen() {
   const [expandedImports, setExpandedImports] = useState<Record<string | number, boolean>>({});
   const [expandedSales, setExpandedSales] = useState<Record<string | number, boolean>>({});
   const [expandedStock, setExpandedStock] = useState<Record<string | number, boolean>>({});
+  const [expandedCounts, setExpandedCounts] = useState<Record<string | number, boolean>>({});
+
+  // Editing state for logs
+  const [editingRecord, setEditingRecord] = useState<{
+    type: 'import' | 'sale';
+    id: number | string;
+    itemId: number | string;
+    itemName: string;
+    oldQty: number;
+    oldCost?: number;
+    remark?: string | null;
+  } | null>(null);
+  const [editQty, setEditQty] = useState('');
+  const [editCost, setEditCost] = useState('');
+  const [editRemark, setEditRemark] = useState('');
+  const [password, setPassword] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+
+  // New stock count physical correction state
+  const [countingItem, setCountingItem] = useState<BeerItem | null>(null);
+  const [physicalQty, setPhysicalQty] = useState('');
+  const [countNote, setCountNote] = useState('');
+  const [isSubmittingCount, setIsSubmittingCount] = useState(false);
 
   const router = useRouter();
   const colorScheme = useColorScheme();
@@ -138,8 +178,8 @@ function WeeklyReportScreen() {
         })}`
       );
 
-      // Fetch categories, items, and transactions inside the period
-      const [catsRes, itemsRes, importsRes, salesRes] = await Promise.all([
+      // Fetch categories, items, transactions, and physical counts inside the period
+      const [catsRes, itemsRes, importsRes, salesRes, countsRes] = await Promise.all([
         supabase.from('category').select('*'),
         supabase.from('items').select('*'),
         supabase
@@ -155,17 +195,25 @@ function WeeklyReportScreen() {
           .gte('created_at', start.toISOString())
           .lte('created_at', end.toISOString())
           .order('created_at', { ascending: false }),
+        supabase
+          .from('stock_count')
+          .select('*')
+          .gte('created_at', start.toISOString())
+          .lte('created_at', end.toISOString())
+          .order('created_at', { ascending: false }),
       ]);
 
       if (catsRes.error) throw catsRes.error;
       if (itemsRes.error) throw itemsRes.error;
       if (importsRes.error) throw importsRes.error;
       if (salesRes.error) throw salesRes.error;
+      if (countsRes.error) throw countsRes.error;
 
       const fetchedCats = catsRes.data || [];
       const fetchedItems = itemsRes.data || [];
       const fetchedImports = importsRes.data || [];
       const fetchedSales = salesRes.data || [];
+      const fetchedCounts = countsRes.data || [];
 
       setCategories(fetchedCats);
       setItems(fetchedItems);
@@ -196,13 +244,184 @@ function WeeklyReportScreen() {
         };
       });
 
+      const mappedCounts = fetchedCounts.map((cnt) => {
+        const matchingItem = itemMap.get(cnt.item.toString());
+        return {
+          ...cnt,
+          itemName: matchingItem?.name || 'Unknown Item',
+          itemUnit: matchingItem?.unit || '',
+          itemCatId: matchingItem?.cat || null,
+        };
+      });
+
       setWeeklyImports(mappedImports);
       setWeeklySales(mappedSales);
+      setWeeklyCounts(mappedCounts);
     } catch (error) {
       console.error('Error fetching report data:', error);
       Alert.alert('Error', 'Failed to fetch report data');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleOpenEditModal = (type: 'import' | 'sale', record: any) => {
+    setEditingRecord({
+      type,
+      id: record.id,
+      itemId: record.item,
+      itemName: record.itemName || 'Unknown Item',
+      oldQty: record.quantity,
+      oldCost: type === 'import' ? record.cost : undefined,
+      remark: type === 'import' ? record.remark : undefined,
+    });
+    setEditQty(record.quantity.toString());
+    setEditCost(type === 'import' ? record.cost.toString() : '');
+    setEditRemark(type === 'import' ? record.remark || '' : '');
+    setPassword(''); // Reset password input on open
+  };
+
+  const handleSaveChanges = async () => {
+    if (!editingRecord) return;
+
+    // Password validation
+    if (password !== '123456789') {
+      Alert.alert('Unauthorized', 'Incorrect password. Changes not saved.');
+      return;
+    }
+
+    const newQty = parseFloat(editQty);
+    if (isNaN(newQty) || newQty < 0) {
+      Alert.alert('Invalid Input', 'Quantity must be a valid non-negative number');
+      return;
+    }
+
+    const newCost = parseFloat(editCost);
+    if (editingRecord.type === 'import' && (isNaN(newCost) || newCost < 0)) {
+      Alert.alert('Invalid Input', 'Cost must be a valid non-negative number');
+      return;
+    }
+
+    setIsSaving(true);
+    try {
+      // 1. Fetch live stock value of the item
+      const { data: itemData, error: itemFetchError } = await supabase
+        .from('items')
+        .select('quantity')
+        .eq('id', editingRecord.itemId)
+        .single();
+
+      if (itemFetchError) throw itemFetchError;
+
+      const currentItemQty = itemData.quantity || 0;
+      let calculatedStockQty = currentItemQty;
+
+      if (editingRecord.type === 'import') {
+        const diff = newQty - editingRecord.oldQty;
+        calculatedStockQty = currentItemQty + diff;
+
+        // Update the import database entry
+        const { error: importUpdateError } = await supabase
+          .from('import')
+          .update({
+            quantity: newQty,
+            cost: newCost,
+            remark: editRemark.trim() || null,
+          })
+          .eq('id', editingRecord.id);
+
+        if (importUpdateError) throw importUpdateError;
+      } else {
+        const diff = newQty - editingRecord.oldQty;
+        calculatedStockQty = currentItemQty - diff;
+
+        // Update the deduct database entry
+        const { error: deductUpdateError } = await supabase
+          .from('deduct')
+          .update({
+            quantity: newQty,
+          })
+          .eq('id', editingRecord.id);
+
+        if (deductUpdateError) throw deductUpdateError;
+      }
+
+      // 2. Adjust target stock in the items table
+      const { error: itemUpdateError } = await supabase
+        .from('items')
+        .update({ quantity: calculatedStockQty })
+        .eq('id', editingRecord.itemId);
+
+      if (itemUpdateError) throw itemUpdateError;
+
+      Alert.alert('Success', 'Record updated and inventory adjusted.');
+      setEditingRecord(null);
+      fetchReportData();
+    } catch (error: any) {
+      console.error('Error updating record:', error);
+      Alert.alert('Error', error.message || 'Failed to apply requested changes');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleOpenCountModal = (item: BeerItem) => {
+    setCountingItem(item);
+    setPhysicalQty(item.quantity.toString());
+    setCountNote('');
+  };
+
+  const handleSaveStockCount = async () => {
+    if (!countingItem) return;
+
+    const parsedPhysical = parseFloat(physicalQty);
+    if (isNaN(parsedPhysical) || parsedPhysical < 0) {
+      Alert.alert('Invalid Input', 'Physical quantity must be a valid non-negative number');
+      return;
+    }
+
+    setIsSubmittingCount(true);
+    try {
+      // 1. Fetch current system quantity right before applying to ensure exact matching
+      const { data: itemData, error: itemFetchError } = await supabase
+        .from('items')
+        .select('quantity')
+        .eq('id', countingItem.id)
+        .single();
+
+      if (itemFetchError) throw itemFetchError;
+      const liveSystemQty = itemData.quantity || 0;
+
+      // 2. Insert record into stock_count table
+      const { error: insertError } = await supabase
+        .from('stock_count')
+        .insert([
+          {
+            item: countingItem.id,
+            system_quantity: liveSystemQty,
+            physical_quantity: parsedPhysical,
+            note: countNote.trim() || null,
+          }
+        ]);
+
+      if (insertError) throw insertError;
+
+      // 3. Force inventory value in items table to match exact physically counted stock
+      const { error: itemUpdateError } = await supabase
+        .from('items')
+        .update({ quantity: parsedPhysical })
+        .eq('id', countingItem.id);
+
+      if (itemUpdateError) throw itemUpdateError;
+
+      Alert.alert('Success', 'Physical stock count correction recorded.');
+      setCountingItem(null);
+      fetchReportData();
+    } catch (error: any) {
+      console.error('Error recording stock count:', error);
+      Alert.alert('Error', error.message || 'Failed to record stock count');
+    } finally {
+      setIsSubmittingCount(false);
     }
   };
 
@@ -295,7 +514,7 @@ function WeeklyReportScreen() {
 
       {/* Segmented Tab Selector */}
       <View style={[styles.tabBar, { borderBottomColor: colors.border }]}>
-        {(['overview', 'imports', 'sales', 'stock'] as TabType[]).map((tab) => {
+        {(['overview', 'imports', 'sales', 'stock', 'counts'] as TabType[]).map((tab) => {
           const isActive = activeTab === tab;
           return (
             <TouchableOpacity
@@ -362,7 +581,7 @@ function WeeklyReportScreen() {
                   💡 Clean Report Guide
                 </Text>
                 <Text style={{ fontSize: 12, color: colors.textSecondary, lineHeight: 16 }}>
-                  Select the tabs above to view granular transaction logs for restocks, sales checkout histories, or active stock segmented by categories.
+                  Select tabs above to review restock, sales logs, or current inventory lists. Go to the "Stock" tab to log physical count counts, or visit "Counts" to track discrepancies.
                 </Text>
               </View>
             </View>
@@ -374,7 +593,7 @@ function WeeklyReportScreen() {
               <View style={styles.tabSectionHeader}>
                 <Text style={[styles.tabSectionTitle, { color: colors.text }]}>Restock logs</Text>
                 <Text style={[styles.tabSectionSubtitle, { color: colors.textSecondary }]}>
-                  {weeklyImports.length} items restocked in this period
+                  {weeklyImports.length} items restocked in this period (Tap row to edit)
                 </Text>
               </View>
 
@@ -414,8 +633,10 @@ function WeeklyReportScreen() {
                     {isExpanded && (
                       <View style={[styles.tableCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
                         {catImports.map((imp, idx) => (
-                          <View
+                          <TouchableOpacity
                             key={imp.id}
+                            activeOpacity={0.7}
+                            onPress={() => handleOpenEditModal('import', imp)}
                             style={[
                               styles.tableRow,
                               {
@@ -443,7 +664,7 @@ function WeeklyReportScreen() {
                                 {formatETB(imp.cost)}/u
                               </Text>
                             </View>
-                          </View>
+                          </TouchableOpacity>
                         ))}
                       </View>
                     )}
@@ -488,8 +709,10 @@ function WeeklyReportScreen() {
                     {isExpanded && (
                       <View style={[styles.tableCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
                         {standaloneImports.map((imp, idx) => (
-                          <View
+                          <TouchableOpacity
                             key={imp.id}
+                            activeOpacity={0.7}
+                            onPress={() => handleOpenEditModal('import', imp)}
                             style={[
                               styles.tableRow,
                               {
@@ -517,7 +740,7 @@ function WeeklyReportScreen() {
                                 {formatETB(imp.cost)}/u
                               </Text>
                             </View>
-                          </View>
+                          </TouchableOpacity>
                         ))}
                       </View>
                     )}
@@ -541,7 +764,7 @@ function WeeklyReportScreen() {
               <View style={styles.tabSectionHeader}>
                 <Text style={[styles.tabSectionTitle, { color: colors.text }]}>Checkout & Sales Log</Text>
                 <Text style={[styles.tabSectionSubtitle, { color: colors.textSecondary }]}>
-                  {weeklySales.length} items checked out in this period
+                  {weeklySales.length} items checked out in this period (Tap row to edit)
                 </Text>
               </View>
 
@@ -581,8 +804,10 @@ function WeeklyReportScreen() {
                     {isExpanded && (
                       <View style={[styles.tableCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
                         {catSales.map((sale, idx) => (
-                          <View
+                          <TouchableOpacity
                             key={sale.id}
+                            activeOpacity={0.7}
+                            onPress={() => handleOpenEditModal('sale', sale)}
                             style={[
                               styles.tableRow,
                               {
@@ -605,7 +830,7 @@ function WeeklyReportScreen() {
                                 {formatETB(sale.itemCost || 0)}/u
                               </Text>
                             </View>
-                          </View>
+                          </TouchableOpacity>
                         ))}
                       </View>
                     )}
@@ -650,8 +875,10 @@ function WeeklyReportScreen() {
                     {isExpanded && (
                       <View style={[styles.tableCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
                         {standaloneSales.map((sale, idx) => (
-                          <View
+                          <TouchableOpacity
                             key={sale.id}
+                            activeOpacity={0.7}
+                            onPress={() => handleOpenEditModal('sale', sale)}
                             style={[
                               styles.tableRow,
                               {
@@ -674,7 +901,7 @@ function WeeklyReportScreen() {
                                 {formatETB(sale.itemCost || 0)}/u
                               </Text>
                             </View>
-                          </View>
+                          </TouchableOpacity>
                         ))}
                       </View>
                     )}
@@ -695,6 +922,13 @@ function WeeklyReportScreen() {
           {/* TAB 4: ACTIVE STOCK SEGMENTED */}
           {activeTab === 'stock' && (
             <View style={{ gap: 16 }}>
+              <View style={styles.tabSectionHeader}>
+                <Text style={[styles.tabSectionTitle, { color: colors.text }]}>Active Inventory Stock</Text>
+                <Text style={[styles.tabSectionSubtitle, { color: colors.textSecondary }]}>
+                  Tap on any item below to record a manual stock count correction
+                </Text>
+              </View>
+
               {categories.map((cat) => {
                 const catItems = items.filter((i) => i.cat === cat.id);
                 if (catItems.length === 0) return null;
@@ -731,8 +965,10 @@ function WeeklyReportScreen() {
                     {isExpanded && (
                       <View style={[styles.tableCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
                         {catItems.map((item, idx) => (
-                          <View
+                          <TouchableOpacity
                             key={item.id}
+                            activeOpacity={0.7}
+                            onPress={() => handleOpenCountModal(item)}
                             style={[
                               styles.tableRow,
                               {
@@ -755,7 +991,7 @@ function WeeklyReportScreen() {
                                 {formatETB(item.cost)}/u
                               </Text>
                             </View>
-                          </View>
+                          </TouchableOpacity>
                         ))}
                       </View>
                     )}
@@ -800,8 +1036,10 @@ function WeeklyReportScreen() {
                     {isExpanded && (
                       <View style={[styles.tableCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
                         {standaloneItems.map((item, idx) => (
-                          <View
+                          <TouchableOpacity
                             key={item.id}
+                            activeOpacity={0.7}
+                            onPress={() => handleOpenCountModal(item)}
                             style={[
                               styles.tableRow,
                               {
@@ -824,7 +1062,7 @@ function WeeklyReportScreen() {
                                 {formatETB(item.cost)}/u
                               </Text>
                             </View>
-                          </View>
+                          </TouchableOpacity>
                         ))}
                       </View>
                     )}
@@ -833,8 +1071,321 @@ function WeeklyReportScreen() {
               })()}
             </View>
           )}
+
+          {/* TAB 5: STOCK AUDITS / COUNTS */}
+          {activeTab === 'counts' && (
+            <View style={{ gap: 16 }}>
+              <View style={styles.tabSectionHeader}>
+                <Text style={[styles.tabSectionTitle, { color: colors.text }]}>Stock Counts & Audits</Text>
+                <Text style={[styles.tabSectionSubtitle, { color: colors.textSecondary }]}>
+                  {weeklyCounts.length} correction audits recorded in this period
+                </Text>
+              </View>
+
+              {categories.map((cat) => {
+                const catCounts = weeklyCounts.filter((cnt) => cnt.itemCatId === cat.id);
+                if (catCounts.length === 0) return null;
+
+                const isExpanded = expandedCounts[cat.id] !== false;
+
+                return (
+                  <View key={cat.id} style={styles.categoryBlock}>
+                    <TouchableOpacity
+                      activeOpacity={0.7}
+                      onPress={() => setExpandedCounts(prev => ({ ...prev, [cat.id]: !isExpanded }))}
+                      style={styles.categoryHeaderWithTotals}
+                    >
+                      <View style={styles.categoryTitleContainer}>
+                        <Text style={[styles.categoryTitle, { color: colors.purple }]}>
+                          {isExpanded ? '📂' : '📁'} {cat.name}
+                        </Text>
+                        <Text style={[styles.expandLabel, { color: colors.textSecondary }]}>
+                          {isExpanded ? 'Collapse' : 'Expand'}
+                        </Text>
+                      </View>
+                      <View style={styles.categoryHeaderTotals}>
+                        <Text style={[styles.categoryTotalQty, { color: colors.textSecondary }]}>
+                          {catCounts.length} correction{catCounts.length > 1 ? 's' : ''}
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
+
+                    {isExpanded && (
+                      <View style={[styles.tableCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+                        {catCounts.map((cnt, idx) => {
+                          const diff = cnt.physical_quantity - cnt.system_quantity;
+                          const diffColor = diff > 0 ? colors.success : diff < 0 ? '#ef4444' : colors.textSecondary;
+                          const diffPrefix = diff > 0 ? '+' : '';
+
+                          return (
+                            <View
+                              key={cnt.id}
+                              style={[
+                                styles.tableRow,
+                                {
+                                  borderBottomColor: colors.border,
+                                  borderBottomWidth: idx === catCounts.length - 1 ? 0 : StyleSheet.hairlineWidth,
+                                },
+                              ]}
+                            >
+                              <View style={styles.rowLeft}>
+                                <Text style={[styles.rowItemName, { color: colors.text }]}>{cnt.itemName}</Text>
+                                <Text style={[styles.rowMeta, { color: colors.textSecondary }]}>
+                                  {new Date(cnt.created_at).toLocaleDateString()} · System: {cnt.system_quantity} → Physical: {cnt.physical_quantity} {cnt.itemUnit}
+                                </Text>
+                                {cnt.note ? (
+                                  <Text style={[styles.rowRemark, { color: colors.textSecondary }]}>
+                                    📝 {cnt.note}
+                                  </Text>
+                                ) : null}
+                              </View>
+                              <View style={styles.rowRight}>
+                                <Text style={[styles.rowValue, { color: diffColor }]}>
+                                  {diffPrefix}{diff} {cnt.itemUnit}
+                                </Text>
+                                <Text style={[styles.rowSubvalue, { color: colors.textSecondary }]}>
+                                  {diff < 0 ? 'Shortage' : diff > 0 ? 'Surplus' : 'Balanced'}
+                                </Text>
+                              </View>
+                            </View>
+                          );
+                        })}
+                      </View>
+                    )}
+                  </View>
+                );
+              })}
+
+              {/* Standalone Counts */}
+              {(() => {
+                const standaloneCounts = weeklyCounts.filter((cnt) => !cnt.itemCatId);
+                if (standaloneCounts.length === 0) return null;
+
+                const isExpanded = expandedCounts['standalone'] !== false;
+
+                return (
+                  <View style={styles.categoryBlock}>
+                    <TouchableOpacity
+                      activeOpacity={0.7}
+                      onPress={() => setExpandedCounts(prev => ({ ...prev, standalone: !isExpanded }))}
+                      style={styles.categoryHeaderWithTotals}
+                    >
+                      <View style={styles.categoryTitleContainer}>
+                        <Text style={[styles.categoryTitle, { color: colors.textSecondary }]}>
+                          {isExpanded ? '📂' : '📁'} Standalone Audits
+                        </Text>
+                        <Text style={[styles.expandLabel, { color: colors.textSecondary }]}>
+                          {isExpanded ? 'Collapse' : 'Expand'}
+                        </Text>
+                      </View>
+                      <View style={styles.categoryHeaderTotals}>
+                        <Text style={[styles.categoryTotalQty, { color: colors.textSecondary }]}>
+                          {standaloneCounts.length} correction{standaloneCounts.length > 1 ? 's' : ''}
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
+
+                    {isExpanded && (
+                      <View style={[styles.tableCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+                        {standaloneCounts.map((cnt, idx) => {
+                          const diff = cnt.physical_quantity - cnt.system_quantity;
+                          const diffColor = diff > 0 ? colors.success : diff < 0 ? '#ef4444' : colors.textSecondary;
+                          const diffPrefix = diff > 0 ? '+' : '';
+
+                          return (
+                            <View
+                              key={cnt.id}
+                              style={[
+                                styles.tableRow,
+                                {
+                                  borderBottomColor: colors.border,
+                                  borderBottomWidth: idx === standaloneCounts.length - 1 ? 0 : StyleSheet.hairlineWidth,
+                                },
+                              ]}
+                            >
+                              <View style={styles.rowLeft}>
+                                <Text style={[styles.rowItemName, { color: colors.text }]}>{cnt.itemName}</Text>
+                                <Text style={[styles.rowMeta, { color: colors.textSecondary }]}>
+                                  {new Date(cnt.created_at).toLocaleDateString()} · System: {cnt.system_quantity} → Physical: {cnt.physical_quantity} {cnt.itemUnit}
+                                </Text>
+                                {cnt.note ? (
+                                  <Text style={[styles.rowRemark, { color: colors.textSecondary }]}>
+                                    📝 {cnt.note}
+                                  </Text>
+                                ) : null}
+                              </View>
+                              <View style={styles.rowRight}>
+                                <Text style={[styles.rowValue, { color: diffColor }]}>
+                                  {diffPrefix}{diff} {cnt.itemUnit}
+                                </Text>
+                                <Text style={[styles.rowSubvalue, { color: colors.textSecondary }]}>
+                                  {diff < 0 ? 'Shortage' : diff > 0 ? 'Surplus' : 'Balanced'}
+                                </Text>
+                              </View>
+                            </View>
+                          );
+                        })}
+                      </View>
+                    )}
+                  </View>
+                );
+              })()}
+
+              {weeklyCounts.length === 0 && (
+                <View style={[styles.tableCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+                  <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
+                    No stock counts recorded during this timeframe.
+                  </Text>
+                </View>
+              )}
+            </View>
+          )}
         </ScrollView>
       )}
+
+      {/* Edit transaction Modal */}
+      <Modal
+        visible={editingRecord !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setEditingRecord(null)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContainer, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            <Text style={[styles.modalTitle, { color: colors.text }]}>
+              {editingRecord?.type === 'import' ? '✏️ Edit Restock Entry' : '✏️ Edit Sale Entry'}
+            </Text>
+            <Text style={[styles.modalSubtitle, { color: colors.textSecondary }]}>
+              Item: {editingRecord?.itemName}
+            </Text>
+
+            <View style={{ gap: 12 }}>
+              <InputField
+                label="Quantity"
+                placeholder="Enter quantity"
+                keyboardType="numeric"
+                value={editQty}
+                onChangeText={setEditQty}
+              />
+
+              {editingRecord?.type === 'import' && (
+                <>
+                  <InputField
+                    label="Unit Cost (ETB)"
+                    placeholder="Enter cost per unit"
+                    keyboardType="numeric"
+                    value={editCost}
+                    onChangeText={setEditCost}
+                  />
+                  <InputField
+                    label="Remark (Optional)"
+                    placeholder="Enter remark"
+                    value={editRemark}
+                    onChangeText={setEditRemark}
+                  />
+                </>
+              )}
+
+              <InputField
+                label="Admin Authorization Password"
+                placeholder="Enter password to commit changes"
+                secureTextEntry
+                value={password}
+                onChangeText={setPassword}
+              />
+            </View>
+
+            <View style={styles.modalButtons}>
+              <TouchableOpacity
+                onPress={() => setEditingRecord(null)}
+                style={[styles.modalBtn, { backgroundColor: colors.backgroundElement }]}
+                disabled={isSaving}
+              >
+                <Text style={[styles.cancelBtnText, { color: colors.text }]}>Cancel</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={handleSaveChanges}
+                style={[styles.modalBtn, { backgroundColor: colors.purple }]}
+                disabled={isSaving}
+              >
+                {isSaving ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Text style={{ color: '#fff', fontWeight: '700' }}>Save Changes</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Stock Count Audit Correction Modal */}
+      <Modal
+        visible={countingItem !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setCountingItem(null)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContainer, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            <Text style={[styles.modalTitle, { color: colors.text }]}>
+              📋 Record Physical Count
+            </Text>
+            <Text style={[styles.modalSubtitle, { color: colors.textSecondary }]}>
+              Item: {countingItem?.name}
+            </Text>
+
+            <View style={{ gap: 12 }}>
+              <View style={{ padding: 12, borderRadius: 8, backgroundColor: colors.backgroundElement }}>
+                <Text style={{ fontSize: 13, color: colors.textSecondary }}>
+                  Current System Quantity:{' '}
+                  <Text style={{ fontWeight: '700', color: colors.text }}>
+                    {countingItem?.quantity} {countingItem?.unit}
+                  </Text>
+                </Text>
+              </View>
+
+              <InputField
+                label="Physical Counted Stock"
+                placeholder={`Enter exact quantity on hand (${countingItem?.unit || ''})`}
+                keyboardType="numeric"
+                value={physicalQty}
+                onChangeText={setPhysicalQty}
+              />
+
+              <InputField
+                label="Audit Correction Note"
+                placeholder="e.g. Broken bottles, weekly recount discrepancy"
+                value={countNote}
+                onChangeText={setCountNote}
+              />
+            </View>
+
+            <View style={styles.modalButtons}>
+              <TouchableOpacity
+                onPress={() => setCountingItem(null)}
+                style={[styles.modalBtn, { backgroundColor: colors.backgroundElement }]}
+                disabled={isSubmittingCount}
+              >
+                <Text style={[styles.cancelBtnText, { color: colors.text }]}>Cancel</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={handleSaveStockCount}
+                style={[styles.modalBtn, { backgroundColor: colors.purple }]}
+                disabled={isSubmittingCount}
+              >
+                {isSubmittingCount ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Text style={{ color: '#fff', fontWeight: '700' }}>Save Correction</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -1081,6 +1632,53 @@ const styles = StyleSheet.create({
   loadingText: {
     fontSize: 14,
     fontWeight: '500',
+  },
+
+  /* Modal styling */
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  modalContainer: {
+    width: '100%',
+    maxWidth: 400,
+    borderRadius: 16,
+    padding: 20,
+    borderWidth: 1,
+    elevation: 5,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    marginBottom: 6,
+  },
+  modalSubtitle: {
+    fontSize: 14,
+    marginBottom: 16,
+  },
+  modalButtons: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 12,
+    marginTop: 20,
+  },
+  modalBtn: {
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cancelBtnText: {
+    fontSize: 14,
+    fontWeight: '600',
   },
 });
 
